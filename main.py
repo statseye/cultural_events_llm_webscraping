@@ -68,7 +68,7 @@ def get_date_range() -> Tuple[date, date]:
         Tuple of (start_date, end_date).
     """
     today = date.today()
-    default_end = today + timedelta(days=7)
+    default_end = today + timedelta(days=3)
     
     print("Enter date range (format: DD-MM-YYYY)")
     print("Press Enter for default values.\n")
