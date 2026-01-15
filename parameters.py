@@ -68,20 +68,7 @@ def get_api_key() -> str:
 # =============================================================================
 
 REQUEST_DELAY: float = 1.5
-"""Delay in seconds between HTTP requests to avoid rate limiting."""
-
-REQUEST_TIMEOUT: int = 30
-"""Timeout in seconds for HTTP requests."""
-
-MAX_RETRIES: int = 3
-"""Maximum number of retry attempts for failed requests."""
-
-USER_AGENT: str = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/120.0.0.0 Safari/537.36"
-)
-"""User-Agent header for HTTP requests."""
+"""Delay in seconds between page loads to avoid rate limiting."""
 
 
 # =============================================================================

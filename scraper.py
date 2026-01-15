@@ -2,283 +2,310 @@
 Web scraping module for the Cultural Events Aggregator.
 
 This module provides functionality to scrape cultural event information
-from multiple Polish websites including waw4free.pl, bigbookcafe.pl,
-and kultura.um.warszawa.pl.
+from multiple Polish websites using Playwright for browser automation.
+Supports dynamic content and precise element selection.
 """
 
-import time
+import asyncio
 import re
 from datetime import date, timedelta
 from typing import Optional, List, Dict, Any
-from urllib.parse import urljoin
 
-import requests
+from playwright.async_api import async_playwright, Page, Browser
 from bs4 import BeautifulSoup
 
-from parameters import (
-    REQUEST_DELAY,
-    REQUEST_TIMEOUT,
-    MAX_RETRIES,
-    USER_AGENT,
-)
+from parameters import REQUEST_DELAY
 
 
 class WebScraper:
     """
-    A web scraper for extracting cultural event information from Polish websites.
+    A web scraper using Playwright for extracting cultural event information.
     
-    Attributes:
-        session: requests.Session object for making HTTP requests.
-        last_request_time: Timestamp of the last request for rate limiting.
+    Uses headless browser to handle JavaScript-rendered content and
+    precise CSS selectors to extract only event-related data.
     """
     
     def __init__(self) -> None:
-        """Initialize the WebScraper with a configured session."""
-        self.session = requests.Session()
-        self.session.headers.update({
-            "User-Agent": USER_AGENT,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "pl-PL,pl;q=0.9,en;q=0.8",
-            "Accept-Encoding": "identity",  # Disable compression to avoid binary data issues
-            "Connection": "keep-alive",
-        })
-        self.last_request_time: float = 0
+        """Initialize the WebScraper."""
+        self.browser: Optional[Browser] = None
+        self.playwright = None
+        self.delay = REQUEST_DELAY
     
-    def _wait_for_rate_limit(self) -> None:
-        """Wait if necessary to respect rate limiting."""
-        elapsed = time.time() - self.last_request_time
-        if elapsed < REQUEST_DELAY:
-            time.sleep(REQUEST_DELAY - elapsed)
+    async def _init_browser(self) -> None:
+        """Initialize the Playwright browser."""
+        if self.browser is None:
+            self.playwright = await async_playwright().start()
+            self.browser = await self.playwright.chromium.launch(headless=True)
+            print("[INFO] Browser initialized")
     
-    def _fetch_with_retry(self, url: str) -> Optional[str]:
+    async def _close_browser(self) -> None:
+        """Close the Playwright browser."""
+        if self.browser:
+            await self.browser.close()
+            self.browser = None
+        if self.playwright:
+            await self.playwright.stop()
+            self.playwright = None
+    
+    async def _handle_cookie_consent(self, page: Page) -> None:
         """
-        Fetch a URL with retry logic.
+        Try to dismiss cookie consent dialogs.
         
         Args:
-            url: The URL to fetch.
-            
-        Returns:
-            The HTML content as a string, or None if all retries failed.
+            page: Playwright page object.
         """
-        for attempt in range(1, MAX_RETRIES + 1):
+        # Common cookie consent button selectors
+        consent_selectors = [
+            'button:has-text("Akceptuję")',
+            'button:has-text("Zgadzam się")',
+            'button:has-text("Accept")',
+            'button:has-text("Akceptuj")',
+            'button:has-text("OK")',
+            '[class*="cookie"] button',
+            '[class*="consent"] button',
+            '#onetrust-accept-btn-handler',
+            '.cmp-button_button',
+        ]
+        
+        for selector in consent_selectors:
             try:
-                self._wait_for_rate_limit()
-                
-                response = self.session.get(url, timeout=REQUEST_TIMEOUT, verify=False)
-                response.raise_for_status()
-                response.encoding = response.apparent_encoding or 'utf-8'
-                
-                self.last_request_time = time.time()
-                return response.text
-                
-            except requests.exceptions.RequestException as e:
-                print(f"[ERROR] Attempt {attempt}/{MAX_RETRIES} failed for {url}: {e}")
-                if attempt < MAX_RETRIES:
-                    wait_time = attempt * 2  # Exponential backoff
-                    print(f"[INFO] Waiting {wait_time}s before retry...")
-                    time.sleep(wait_time)
-        
-        print(f"[ERROR] Failed to fetch {url} after {MAX_RETRIES} attempts. Skipping...")
-        return None
+                button = page.locator(selector).first
+                if await button.is_visible(timeout=1000):
+                    await button.click()
+                    await asyncio.sleep(0.5)
+                    print("[INFO] Cookie consent dismissed")
+                    return
+            except Exception:
+                continue
     
-    def _extract_text(self, html: str, remove_tags: List[str] = None) -> str:
+    async def _extract_events_waw4free(self, page: Page, target_date: date) -> Dict[str, Any]:
         """
-        Extract clean text from HTML content.
+        Extract events from waw4free.pl for a specific date.
         
         Args:
-            html: Raw HTML content.
-            remove_tags: List of tag names to remove before extraction.
-            
-        Returns:
-            Clean text content.
-        """
-        if remove_tags is None:
-            remove_tags = ["script", "style", "nav", "footer", "header", "aside", "noscript"]
-        
-        soup = BeautifulSoup(html, "html.parser")
-        
-        # Remove unwanted tags
-        for tag in remove_tags:
-            for element in soup.find_all(tag):
-                element.decompose()
-        
-        # Extract text
-        text = soup.get_text(separator=" ", strip=True)
-        
-        # Clean up whitespace
-        text = re.sub(r'\s+', ' ', text)
-        
-        return text
-    
-    def _extract_links(self, html: str, base_url: str, pattern: str) -> List[str]:
-        """
-        Extract links matching a pattern from HTML.
-        
-        Args:
-            html: Raw HTML content.
-            base_url: Base URL for resolving relative links.
-            pattern: Regex pattern to match in href attributes.
-            
-        Returns:
-            List of absolute URLs matching the pattern.
-        """
-        soup = BeautifulSoup(html, "html.parser")
-        links = []
-        
-        for a_tag in soup.find_all("a", href=True):
-            href = a_tag["href"]
-            if re.search(pattern, href):
-                absolute_url = urljoin(base_url, href)
-                if absolute_url not in links:
-                    links.append(absolute_url)
-        
-        return links
-    
-    def scrape_waw4free(self, target_date: date) -> Dict[str, Any]:
-        """
-        Scrape events from waw4free.pl for a specific date.
-        
-        Args:
+            page: Playwright page object.
             target_date: The date to search for events.
             
         Returns:
-            Dictionary with 'text' (extracted content) and 'links' (event URLs).
+            Dictionary with extracted event data.
         """
         date_str = target_date.strftime("%Y-%m-%d")
         url = f"https://waw4free.pl/szukaj?dzien={date_str}"
         
         print(f"[INFO] Scraping waw4free.pl for {target_date.strftime('%d-%m-%Y')}...")
         
-        html = self._fetch_with_retry(url)
-        if html is None:
+        try:
+            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            await self._handle_cookie_consent(page)
+            await asyncio.sleep(2)  # Wait for dynamic content
+            
+            # Extract event cards - targeting specific event elements
+            events_data = []
+            links = []
+            
+            # Look for event links with pattern /wydarzenie-
+            event_links = await page.locator('a[href*="/wydarzenie-"]').all()
+            
+            for element in event_links[:30]:  # Limit to 30 events
+                try:
+                    # Get the parent container for more context
+                    text = await element.inner_text()
+                    if text.strip():
+                        events_data.append(text.strip())
+                    
+                    # Extract link
+                    href = await element.get_attribute('href')
+                    if href:
+                        if not href.startswith('http'):
+                            href = f"https://waw4free.pl{href}"
+                        links.append(href)
+                except Exception:
+                    continue
+            
+            # Get additional context from the page - event details like dates/times
+            # Look for date/time patterns in parent elements
+            event_containers = await page.locator('.event, .wydarzenie, article, .search-result').all()
+            for container in event_containers[:20]:
+                try:
+                    text = await container.inner_text()
+                    if text.strip() and len(text) > 20:
+                        events_data.append(text.strip())
+                except Exception:
+                    continue
+            
+            # If still no data, get main content area
+            if not events_data:
+                try:
+                    main_content = await page.locator('main, .content, #content').first.inner_text()
+                    events_data.append(main_content[:5000])  # Limit size
+                except Exception:
+                    pass
+            
+            return {
+                "text": "\n\n---\n\n".join(list(set(events_data))),
+                "links": list(set(links)),
+                "source": "waw4free.pl",
+                "date": date_str,
+            }
+            
+        except Exception as e:
+            print(f"[ERROR] Failed to scrape waw4free.pl: {e}")
             return {"text": "", "links": [], "source": "waw4free.pl", "date": date_str}
-        
-        # Extract event links
-        links = self._extract_links(html, "https://waw4free.pl", r"/wydarzenie-\d+")
-        
-        # Extract text content
-        text = self._extract_text(html)
-        
-        return {
-            "text": text,
-            "links": links,
-            "source": "waw4free.pl",
-            "date": date_str,
-        }
     
-    def scrape_waw4free_date_range(self, start_date: date, end_date: date) -> List[Dict[str, Any]]:
+    async def _extract_events_bigbookcafe(self, page: Page) -> Dict[str, Any]:
         """
-        Scrape events from waw4free.pl for a date range.
+        Extract events from bigbookcafe.pl repertoire page.
         
         Args:
-            start_date: Start of the date range.
-            end_date: End of the date range (inclusive).
+            page: Playwright page object.
             
         Returns:
-            List of scraping results for each date.
-        """
-        results = []
-        current_date = start_date
-        
-        while current_date <= end_date:
-            result = self.scrape_waw4free(current_date)
-            results.append(result)
-            current_date += timedelta(days=1)
-        
-        return results
-    
-    def scrape_bigbookcafe(self) -> Dict[str, Any]:
-        """
-        Scrape events from bigbookcafe.pl repertoire page.
-        
-        Returns:
-            Dictionary with 'text' (extracted content) and 'links' (event URLs).
+            Dictionary with extracted event data.
         """
         url = "https://bigbookcafe.pl/repertuar/"
         
         print(f"[INFO] Scraping bigbookcafe.pl/repertuar/...")
         
-        html = self._fetch_with_retry(url)
-        if html is None:
+        try:
+            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            await self._handle_cookie_consent(page)
+            await asyncio.sleep(2)
+            
+            events_data = []
+            links = []
+            
+            # BigBookCafe uses h3 headers for events with links to /event/
+            event_headers = await page.locator('h3 a[href*="/event/"]').all()
+            
+            for header in event_headers[:20]:
+                try:
+                    text = await header.inner_text()
+                    href = await header.get_attribute('href')
+                    
+                    if text.strip():
+                        events_data.append(text.strip())
+                    
+                    if href:
+                        if not href.startswith('http'):
+                            href = f"https://bigbookcafe.pl{href}"
+                        links.append(href)
+                except Exception:
+                    continue
+            
+            # Get event descriptions from articles or content blocks
+            articles = await page.locator('article, .event-item, .repertuar-item, .entry-content p').all()
+            for article in articles[:20]:
+                try:
+                    text = await article.inner_text()
+                    if text.strip() and len(text) > 30:
+                        events_data.append(text.strip())
+                except Exception:
+                    continue
+            
+            # Fallback to main content
+            if not events_data:
+                try:
+                    content = await page.locator('.entry-content, main, article').first.inner_text()
+                    events_data.append(content[:5000])
+                except Exception:
+                    pass
+            
+            return {
+                "text": "\n\n---\n\n".join(list(set(events_data))),
+                "links": list(set(links)),
+                "source": "bigbookcafe.pl",
+            }
+            
+        except Exception as e:
+            print(f"[ERROR] Failed to scrape bigbookcafe.pl: {e}")
             return {"text": "", "links": [], "source": "bigbookcafe.pl"}
-        
-        # Extract event links
-        links = self._extract_links(html, "https://bigbookcafe.pl", r"/event/")
-        
-        # Extract text content
-        text = self._extract_text(html)
-        
-        return {
-            "text": text,
-            "links": links,
-            "source": "bigbookcafe.pl",
-        }
     
-    def scrape_kultura_um(self, max_pages: int = 5) -> Dict[str, Any]:
+    async def _extract_events_kultura_um(self, page: Page, max_pages: int = 3) -> Dict[str, Any]:
         """
-        Scrape events from kultura.um.warszawa.pl calendar.
+        Extract events from kultura.um.warszawa.pl calendar.
         
         Args:
+            page: Playwright page object.
             max_pages: Maximum number of pages to scrape.
             
         Returns:
-            Dictionary with 'text' (extracted content) and 'links' (event URLs).
+            Dictionary with extracted event data.
         """
         base_url = "https://kultura.um.warszawa.pl/kalendarz"
-        all_text = []
+        
+        all_events = []
         all_links = []
         
-        for page in range(1, max_pages + 1):
-            print(f"[INFO] Scraping kultura.um.warszawa.pl/kalendarz (page {page})...")
+        for page_num in range(1, max_pages + 1):
+            print(f"[INFO] Scraping kultura.um.warszawa.pl/kalendarz (page {page_num})...")
             
-            # Liferay CMS pagination parameter
-            if page == 1:
-                url = base_url
-            else:
-                url = f"{base_url}?_event_EVENT_INSTANCE_eventsViewPortlet_cur={page}"
-            
-            html = self._fetch_with_retry(url)
-            if html is None:
+            try:
+                if page_num == 1:
+                    url = base_url
+                else:
+                    url = f"{base_url}?_event_EVENT_INSTANCE_eventsViewPortlet_cur={page_num}"
+                
+                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                
+                if page_num == 1:
+                    await self._handle_cookie_consent(page)
+                
+                await asyncio.sleep(2)
+                
+                # Extract event cards - look for titles with links
+                title_links = await page.locator('h2 a, h3 a, .asset-title a').all()
+                
+                for link_el in title_links[:15]:
+                    try:
+                        title = await link_el.inner_text()
+                        href = await link_el.get_attribute('href')
+                        
+                        if title.strip():
+                            # Try to get parent element for date info
+                            parent = link_el.locator('..')
+                            try:
+                                parent_text = await parent.inner_text()
+                                all_events.append(f"{title}\n{parent_text}")
+                            except Exception:
+                                all_events.append(title)
+                        
+                        if href:
+                            if href.startswith('/-/'):
+                                href = f"https://kultura.um.warszawa.pl{href}"
+                            elif not href.startswith('http'):
+                                href = f"https://kultura.um.warszawa.pl{href}"
+                            all_links.append(href)
+                    except Exception:
+                        continue
+                
+                # Get event cards content
+                cards = await page.locator('.asset-entry, .event-card, article.event').all()
+                for card in cards[:15]:
+                    try:
+                        text = await card.inner_text()
+                        if text.strip() and len(text) > 30:
+                            all_events.append(text.strip())
+                    except Exception:
+                        continue
+                
+                # Check if we should continue to next page
+                next_link = await page.locator(f'a[href*="cur={page_num + 1}"]').count()
+                if next_link == 0 and page_num > 1:
+                    break
+                    
+            except Exception as e:
+                print(f"[ERROR] Failed to scrape kultura.um.warszawa.pl page {page_num}: {e}")
                 break
             
-            # Check if we've reached the end of results
-            if page > 1 and "Nie znaleziono" in html:
-                break
-            
-            # Extract event links
-            links = self._extract_links(
-                html, 
-                "https://kultura.um.warszawa.pl", 
-                r"kultura\.um\.warszawa\.pl/-/"
-            )
-            
-            # Also try to find links in the format /-/event-slug
-            soup = BeautifulSoup(html, "html.parser")
-            for a_tag in soup.find_all("a", href=True):
-                href = a_tag["href"]
-                if href.startswith("/-/") and href not in all_links:
-                    absolute_url = urljoin("https://kultura.um.warszawa.pl", href)
-                    if absolute_url not in all_links:
-                        links.append(absolute_url)
-            
-            all_links.extend([l for l in links if l not in all_links])
-            
-            # Extract text content
-            text = self._extract_text(html)
-            all_text.append(text)
-            
-            # Check if there are more pages (look for pagination indicators)
-            if f"cur={page + 1}" not in html and page > 1:
-                # No next page link found
-                break
+            await asyncio.sleep(self.delay)
         
         return {
-            "text": " ".join(all_text),
-            "links": all_links,
+            "text": "\n\n---\n\n".join(list(set(all_events))),
+            "links": list(set(all_links)),
             "source": "kultura.um.warszawa.pl",
         }
     
-    def scrape_all(self, start_date: date, end_date: date) -> Dict[str, Any]:
+    async def scrape_all_async(self, start_date: date, end_date: date) -> Dict[str, Any]:
         """
         Scrape all configured websites for the given date range.
         
@@ -295,37 +322,58 @@ class WebScraper:
             "all_links": [],
         }
         
-        # Scrape waw4free.pl for each date
-        waw4free_results = self.scrape_waw4free_date_range(start_date, end_date)
-        waw4free_text = " ".join([r["text"] for r in waw4free_results if r["text"]])
-        waw4free_links = []
-        for r in waw4free_results:
-            waw4free_links.extend(r["links"])
-        
-        if waw4free_text:
-            all_results["sources"].append({
-                "name": "waw4free.pl",
-                "text": waw4free_text,
-                "links": list(set(waw4free_links)),
-            })
-        
-        # Scrape bigbookcafe.pl
-        bigbook_result = self.scrape_bigbookcafe()
-        if bigbook_result["text"]:
-            all_results["sources"].append({
-                "name": "bigbookcafe.pl",
-                "text": bigbook_result["text"],
-                "links": bigbook_result["links"],
-            })
-        
-        # Scrape kultura.um.warszawa.pl
-        kultura_result = self.scrape_kultura_um()
-        if kultura_result["text"]:
-            all_results["sources"].append({
-                "name": "kultura.um.warszawa.pl",
-                "text": kultura_result["text"],
-                "links": kultura_result["links"],
-            })
+        try:
+            await self._init_browser()
+            page = await self.browser.new_page()
+            
+            # Set viewport and user agent
+            await page.set_viewport_size({"width": 1920, "height": 1080})
+            
+            # Scrape waw4free.pl for each date
+            waw4free_texts = []
+            waw4free_links = []
+            
+            current_date = start_date
+            while current_date <= end_date:
+                result = await self._extract_events_waw4free(page, current_date)
+                if result["text"]:
+                    waw4free_texts.append(result["text"])
+                waw4free_links.extend(result["links"])
+                current_date += timedelta(days=1)
+                await asyncio.sleep(self.delay)
+            
+            if waw4free_texts:
+                all_results["sources"].append({
+                    "name": "waw4free.pl",
+                    "text": "\n\n".join(waw4free_texts),
+                    "links": list(set(waw4free_links)),
+                })
+            
+            # Scrape bigbookcafe.pl
+            bigbook_result = await self._extract_events_bigbookcafe(page)
+            if bigbook_result["text"]:
+                all_results["sources"].append({
+                    "name": "bigbookcafe.pl",
+                    "text": bigbook_result["text"],
+                    "links": bigbook_result["links"],
+                })
+            await asyncio.sleep(self.delay)
+            
+            # Scrape kultura.um.warszawa.pl
+            kultura_result = await self._extract_events_kultura_um(page)
+            if kultura_result["text"]:
+                all_results["sources"].append({
+                    "name": "kultura.um.warszawa.pl",
+                    "text": kultura_result["text"],
+                    "links": kultura_result["links"],
+                })
+            
+            await page.close()
+            
+        except Exception as e:
+            print(f"[ERROR] Scraping failed: {e}")
+        finally:
+            await self._close_browser()
         
         # Aggregate all text and links
         all_texts = []
@@ -337,6 +385,19 @@ class WebScraper:
         all_results["all_links"] = list(set(all_results["all_links"]))
         
         return all_results
+    
+    def scrape_all(self, start_date: date, end_date: date) -> Dict[str, Any]:
+        """
+        Synchronous wrapper for scrape_all_async.
+        
+        Args:
+            start_date: Start of the date range.
+            end_date: End of the date range (inclusive).
+            
+        Returns:
+            Dictionary with aggregated text and links from all sources.
+        """
+        return asyncio.run(self.scrape_all_async(start_date, end_date))
 
 
 if __name__ == "__main__":
@@ -345,11 +406,15 @@ if __name__ == "__main__":
     
     scraper = WebScraper()
     today = date.today()
-    end = today + timedelta(days=7)
+    end = today + timedelta(days=3)
     
-    print(f"Testing scraper from {today} to {end}")
+    print(f"Testing Playwright scraper from {today} to {end}")
     results = scraper.scrape_all(today, end)
     
     print(f"\nFound {len(results['sources'])} sources")
     print(f"Total text length: {len(results['aggregated_text'])} characters")
     print(f"Total links found: {len(results['all_links'])}")
+    
+    # Print sample of extracted text
+    if results['aggregated_text']:
+        print(f"\nSample text (first 1000 chars):\n{results['aggregated_text'][:1000]}")

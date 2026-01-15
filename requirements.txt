@@ -1,8 +1,8 @@
 # Cultural Events Aggregator - Dependencies
 # Python 3.11+ required
 
-# HTTP requests library
-requests==2.31.0
+# Browser automation for web scraping
+playwright==1.40.0
 
 # HTML parsing
 beautifulsoup4==4.12.3
