@@ -39,7 +39,7 @@ class WebScraper:
             "User-Agent": USER_AGENT,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "pl-PL,pl;q=0.9,en;q=0.8",
-            "Accept-Encoding": "gzip, deflate, br",
+            "Accept-Encoding": "identity",  # Disable compression to avoid binary data issues
             "Connection": "keep-alive",
         })
         self.last_request_time: float = 0
