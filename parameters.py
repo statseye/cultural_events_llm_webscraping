@@ -7,6 +7,9 @@ target websites, API configuration, and scraping parameters.
 
 import os
 from typing import List
+import urllib3
+
+urllib3.disable_warnings()
 
 
 # =============================================================================
@@ -36,26 +39,26 @@ WEBPAGES: List[str] = [
 # LLM CONFIGURATION
 # =============================================================================
 
-LLM_MODEL: str = "gpt-4o"
-"""OpenAI model to use for event filtering and analysis."""
+LLM_MODEL: str = "claude-sonnet-4-20250514"
+"""Anthropic model to use for event filtering and analysis."""
 
 
 def get_api_key() -> str:
     """
-    Retrieve the OpenAI API key from environment variables.
+    Retrieve the Anthropic API key from environment variables.
     
     Returns:
-        str: The OpenAI API key.
+        str: The Anthropic API key.
         
     Raises:
-        EnvironmentError: If OPENAI_API_KEY is not set.
+        EnvironmentError: If ANTHROPIC_API_KEY is not set.
     """
-    api_key = os.environ.get("OPENAI_API_KEY")
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         raise EnvironmentError(
-            "OPENAI_API_KEY environment variable is not set. "
+            "ANTHROPIC_API_KEY environment variable is not set. "
             "Please set it before running the application.\n"
-            "Example: set OPENAI_API_KEY=sk-your-key-here"
+            "Example: set ANTHROPIC_API_KEY=sk-ant-your-key-here"
         )
     return api_key
 

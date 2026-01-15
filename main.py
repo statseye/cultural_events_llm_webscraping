@@ -31,7 +31,7 @@ def print_banner() -> None:
     """Print the application banner."""
     print("=" * 50)
     print("  Cultural Events Aggregator")
-    print("  Powered by OpenAI GPT-4o")
+    print("  Powered by Anthropic Claude")
     print("=" * 50)
     print()
 

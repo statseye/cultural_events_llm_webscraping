@@ -1,7 +1,7 @@
 """
 LLM Processing module for the Cultural Events Aggregator.
 
-This module provides functionality to communicate with OpenAI's GPT models
+This module provides functionality to communicate with Anthropic's Claude models
 to analyze scraped content and extract relevant cultural events based on
 user preferences.
 """
@@ -11,27 +11,27 @@ import re
 from typing import List, Dict, Any, Optional
 from datetime import date
 
-from openai import OpenAI
+import anthropic
 
 
 class LLMProcessor:
     """
-    A processor that uses OpenAI's GPT models to analyze and filter cultural events.
+    A processor that uses Anthropic's Claude models to analyze and filter cultural events.
     
     Attributes:
-        client: OpenAI client instance.
-        model: Name of the GPT model to use.
+        client: Anthropic client instance.
+        model: Name of the Claude model to use.
     """
     
-    def __init__(self, api_key: str, model: str = "gpt-4o") -> None:
+    def __init__(self, api_key: str, model: str = "claude-sonnet-4-20250514") -> None:
         """
         Initialize the LLM processor.
         
         Args:
-            api_key: OpenAI API key.
-            model: Name of the model to use (default: gpt-4o).
+            api_key: Anthropic API key.
+            model: Name of the model to use (default: claude-sonnet-4-20250514).
         """
-        self.client = OpenAI(api_key=api_key)
+        self.client = anthropic.Anthropic(api_key=api_key)
         self.model = model
     
     def _build_system_prompt(self) -> str:
@@ -245,17 +245,16 @@ Return the results as a JSON array. If no matching events are found, return []."
         )
         
         try:
-            response = self.client.chat.completions.create(
+            response = self.client.messages.create(
                 model=self.model,
+                max_tokens=4000,
+                system=system_prompt,
                 messages=[
-                    {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-                temperature=0.1,  # Low temperature for consistent, factual output
-                max_tokens=4000,
             )
             
-            response_text = response.choices[0].message.content
+            response_text = response.content[0].text
             
             # Parse and validate events
             events = self._parse_response(response_text)

@@ -64,7 +64,7 @@ class WebScraper:
             try:
                 self._wait_for_rate_limit()
                 
-                response = self.session.get(url, timeout=REQUEST_TIMEOUT)
+                response = self.session.get(url, timeout=REQUEST_TIMEOUT, verify=False)
                 response.raise_for_status()
                 response.encoding = response.apparent_encoding or 'utf-8'
                 
